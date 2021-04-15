@@ -21,6 +21,10 @@ import { ILogService } from 'vs/platform/log/common/log';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { Schemas } from 'vs/base/common/network';
 import { hash } from 'vs/base/common/hash';
+import { Registry } from 'vs/platform/registry/common/platform';
+import { IWorkbenchContributionsRegistry, Extensions as WorkbenchExtensions } from 'vs/workbench/common/contributions';
+import { BackupRestorer } from 'vs/workbench/services/backup/common/backupRestorer';
+import { LifecyclePhase } from 'vs/workbench/services/lifecycle/common/lifecycle';
 
 export interface IBackupFilesModel {
 	resolve(backupRoot: URI): Promise<void>;
@@ -455,7 +459,7 @@ export class InMemoryBackupFileService implements IBackupFileService {
 
 	declare readonly _serviceBrand: undefined;
 
-	private backups: Map<string, ITextSnapshot> = new Map();
+	private backups = new Map<string, { content: ITextSnapshot, meta?: object }>();
 
 	constructor(private readonly hashPath: (resource: URI) => string) { }
 
@@ -471,14 +475,14 @@ export class InMemoryBackupFileService implements IBackupFileService {
 
 	async backup<T extends object>(resource: URI, content?: ITextSnapshot, versionId?: number, meta?: T, token?: CancellationToken): Promise<void> {
 		const backupResource = this.toBackupResource(resource);
-		this.backups.set(backupResource.toString(), content || stringToSnapshot(''));
+		this.backups.set(backupResource.toString(), { content: content || stringToSnapshot(''), meta });
 	}
 
 	async resolve<T extends object>(resource: URI): Promise<IResolvedBackup<T> | undefined> {
 		const backupResource = this.toBackupResource(resource);
-		const snapshot = this.backups.get(backupResource.toString());
-		if (snapshot) {
-			return { value: createTextBufferFactoryFromSnapshot(snapshot) };
+		const backup = this.backups.get(backupResource.toString());
+		if (backup) {
+			return { value: createTextBufferFactoryFromSnapshot(backup.content), meta: backup.meta as T | undefined };
 		}
 
 		return undefined;
@@ -509,3 +513,6 @@ export function hashPath(resource: URI): string {
 
 	return hash(str).toString(16);
 }
+
+// Register Backup Restorer
+Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(BackupRestorer, LifecyclePhase.Starting);

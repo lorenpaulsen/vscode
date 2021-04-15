@@ -5,6 +5,7 @@
 
 import { multibyteAwareBtoa } from 'vs/base/browser/dom';
 import { CancelablePromise, createCancelablePromise, timeout } from 'vs/base/common/async';
+import { VSBuffer } from 'vs/base/common/buffer';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { isPromiseCanceledError, onUnexpectedError } from 'vs/base/common/errors';
 import { Emitter, Event } from 'vs/base/common/event';
@@ -91,19 +92,19 @@ export class MainThreadCustomEditors extends Disposable implements extHostProtoc
 		}));
 	}
 
-	dispose() {
+	override dispose() {
 		super.dispose();
 
 		dispose(this._editorProviders.values());
 		this._editorProviders.clear();
 	}
 
-	public $registerTextEditorProvider(extensionData: extHostProtocol.WebviewExtensionDescription, viewType: string, options: extHostProtocol.IWebviewPanelOptions, capabilities: extHostProtocol.CustomTextEditorCapabilities): void {
-		this.registerEditorProvider(CustomEditorModelType.Text, reviveWebviewExtension(extensionData), viewType, options, capabilities, true);
+	public $registerTextEditorProvider(extensionData: extHostProtocol.WebviewExtensionDescription, viewType: string, options: extHostProtocol.IWebviewPanelOptions, capabilities: extHostProtocol.CustomTextEditorCapabilities, serializeBuffersForPostMessage: boolean): void {
+		this.registerEditorProvider(CustomEditorModelType.Text, reviveWebviewExtension(extensionData), viewType, options, capabilities, true, serializeBuffersForPostMessage);
 	}
 
-	public $registerCustomEditorProvider(extensionData: extHostProtocol.WebviewExtensionDescription, viewType: string, options: extHostProtocol.IWebviewPanelOptions, supportsMultipleEditorsPerDocument: boolean): void {
-		this.registerEditorProvider(CustomEditorModelType.Custom, reviveWebviewExtension(extensionData), viewType, options, {}, supportsMultipleEditorsPerDocument);
+	public $registerCustomEditorProvider(extensionData: extHostProtocol.WebviewExtensionDescription, viewType: string, options: extHostProtocol.IWebviewPanelOptions, supportsMultipleEditorsPerDocument: boolean, serializeBuffersForPostMessage: boolean): void {
+		this.registerEditorProvider(CustomEditorModelType.Custom, reviveWebviewExtension(extensionData), viewType, options, {}, supportsMultipleEditorsPerDocument, serializeBuffersForPostMessage);
 	}
 
 	private registerEditorProvider(
@@ -113,6 +114,7 @@ export class MainThreadCustomEditors extends Disposable implements extHostProtoc
 		options: extHostProtocol.IWebviewPanelOptions,
 		capabilities: extHostProtocol.CustomTextEditorCapabilities,
 		supportsMultipleEditorsPerDocument: boolean,
+		serializeBuffersForPostMessage: boolean,
 	): void {
 		if (this._editorProviders.has(viewType)) {
 			throw new Error(`Provider for ${viewType} already registered`);
@@ -132,7 +134,7 @@ export class MainThreadCustomEditors extends Disposable implements extHostProtoc
 				const handle = webviewInput.id;
 				const resource = webviewInput.resource;
 
-				this.mainThreadWebviewPanels.addWebviewInput(handle, webviewInput);
+				this.mainThreadWebviewPanels.addWebviewInput(handle, webviewInput, { serializeBuffersForPostMessage });
 				webviewInput.webview.options = options;
 				webviewInput.webview.extension = extension;
 
@@ -303,8 +305,13 @@ class MainThreadCustomEditorModel extends Disposable implements ICustomEditorMod
 		getEditors: () => CustomEditorInput[],
 		cancellation: CancellationToken,
 		_backupFileService: IBackupFileService,
-	) {
-		const { editable } = await proxy.$createCustomDocument(resource, viewType, options.backupId, cancellation);
+	): Promise<MainThreadCustomEditorModel> {
+		const editors = getEditors();
+		let untitledDocumentData: VSBuffer | undefined;
+		if (editors.length !== 0) {
+			untitledDocumentData = editors[0].untitledDocumentData;
+		}
+		const { editable } = await proxy.$createCustomDocument(resource, viewType, options.backupId, untitledDocumentData, cancellation);
 		return instantiationService.createInstance(MainThreadCustomEditorModel, proxy, viewType, resource, !!options.backupId, editable, getEditors);
 	}
 
@@ -338,7 +345,7 @@ class MainThreadCustomEditorModel extends Disposable implements ICustomEditorMod
 		return this._editorResource;
 	}
 
-	dispose() {
+	override dispose() {
 		this.#isDisposed = true;
 
 		if (this._editable) {

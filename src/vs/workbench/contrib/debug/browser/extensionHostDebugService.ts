@@ -6,16 +6,12 @@
 import { ExtensionHostDebugChannelClient, ExtensionHostDebugBroadcastChannel } from 'vs/platform/debug/common/extensionHostDebugIpc';
 import { IRemoteAgentService } from 'vs/workbench/services/remote/common/remoteAgentService';
 import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
-import { IExtensionHostDebugService, IOpenExtensionWindowResult } from 'vs/platform/debug/common/extensionHostDebug';
-import { IDebugHelperService } from 'vs/workbench/contrib/debug/common/debug';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { TelemetryService } from 'vs/platform/telemetry/common/telemetryService';
+import { IExtensionHostDebugService, INullableProcessEnvironment, IOpenExtensionWindowResult } from 'vs/platform/debug/common/extensionHostDebug';
 import { IChannel } from 'vs/base/parts/ipc/common/ipc';
 import { Event } from 'vs/base/common/event';
 import { URI, UriComponents } from 'vs/base/common/uri';
 import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { IWorkspaceProvider, IWorkspace } from 'vs/workbench/services/host/browser/browserHostService';
-import { IProcessEnvironment } from 'vs/base/common/platform';
 import { hasWorkspaceFileExtension, isSingleFolderWorkspaceIdentifier, isWorkspaceIdentifier, toWorkspaceIdentifier } from 'vs/platform/workspaces/common/workspaces';
 import { ILogService } from 'vs/platform/log/common/log';
 import { IHostService } from 'vs/workbench/services/host/browser/host';
@@ -90,7 +86,7 @@ class BrowserExtensionHostDebugService extends ExtensionHostDebugChannelClient i
 		}
 	}
 
-	async openExtensionDevelopmentHostWindow(args: string[], env: IProcessEnvironment): Promise<IOpenExtensionWindowResult> {
+	async override openExtensionDevelopmentHostWindow(args: string[], _env: INullableProcessEnvironment | undefined, _debugRenderer: boolean): Promise<IOpenExtensionWindowResult> {
 
 		// Add environment parameters required for debug to work
 		const environment = new Map<string, string>();
@@ -186,14 +182,3 @@ class BrowserExtensionHostDebugService extends ExtensionHostDebugChannelClient i
 }
 
 registerSingleton(IExtensionHostDebugService, BrowserExtensionHostDebugService, true);
-
-class BrowserDebugHelperService implements IDebugHelperService {
-
-	declare readonly _serviceBrand: undefined;
-
-	createTelemetryService(configurationService: IConfigurationService, args: string[]): TelemetryService | undefined {
-		return undefined;
-	}
-}
-
-registerSingleton(IDebugHelperService, BrowserDebugHelperService, true);

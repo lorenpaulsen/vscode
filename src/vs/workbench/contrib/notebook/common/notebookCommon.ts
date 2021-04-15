@@ -18,10 +18,8 @@ import { IAccessibilityInformation } from 'vs/platform/accessibility/common/acce
 import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
 import { IEditorModel } from 'vs/platform/editor/common/editor';
 import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
-import { IRevertOptions } from 'vs/workbench/common/editor';
+import { IEditorInput, IRevertOptions, ISaveOptions } from 'vs/workbench/common/editor';
 import { NotebookTextModel } from 'vs/workbench/contrib/notebook/common/model/notebookTextModel';
-import { IDisposable } from 'vs/base/common/lifecycle';
-import { IFileStatWithMetadata } from 'vs/platform/files/common/files';
 import { ThemeColor } from 'vs/platform/theme/common/themeService';
 
 export enum CellKind {
@@ -60,42 +58,39 @@ export enum NotebookRunState {
 
 export const notebookDocumentMetadataDefaults: Required<NotebookDocumentMetadata> = {
 	editable: true,
-	runnable: true,
 	cellEditable: true,
-	cellRunnable: true,
-	cellHasExecutionOrder: true,
 	custom: {},
-	runState: NotebookRunState.Idle,
 	trusted: true
 };
 
 export interface NotebookDocumentMetadata {
 	editable: boolean;
-	runnable: boolean;
 	cellEditable: boolean;
-	cellRunnable: boolean;
-	cellHasExecutionOrder: boolean;
 	custom?: { [key: string]: unknown };
-	runState?: NotebookRunState;
 	trusted: boolean;
 }
 
-export enum NotebookCellRunState {
-	Running = 1,
-	Idle = 2,
-	Success = 3,
-	Error = 4
+export enum NotebookCellExecutionState {
+	Idle = 1,
+	Pending = 2,
+	Executing = 3,
+}
+
+export interface INotebookCellPreviousExecutionResult {
+	executionOrder?: number;
+	success?: boolean;
+	duration?: number;
 }
 
 export interface NotebookCellMetadata {
 	editable?: boolean;
-	runnable?: boolean;
 	breakpointMargin?: boolean;
-	hasExecutionOrder?: boolean;
 	executionOrder?: number;
 	statusMessage?: string;
-	runState?: NotebookCellRunState;
+	lastRunSuccess?: boolean;
+	runState?: NotebookCellExecutionState;
 	runStartTime?: number;
+	runStartTimeAdjustment?: number;
 	lastRunDuration?: number;
 	inputCollapsed?: boolean;
 	outputCollapsed?: boolean;
@@ -113,6 +108,24 @@ export interface INotebookMimeTypeSelector {
 	mimeTypes?: string[];
 }
 
+/**
+ * Passed to INotebookRendererInfo.matches when the notebook is initially
+ * loaded before the kernel is known.
+ */
+export const AnyRendererApi = Symbol('AnyRendererApi');
+
+/** Note: enum values are used for sorting */
+export const enum NotebookRendererMatch {
+	/** Renderer has a hard dependency on an available kernel */
+	WithHardKernelDependency = 0,
+	/** Renderer works better with an available kernel */
+	WithOptionalKernelDependency = 1,
+	/** Renderer is kernel-agnostic */
+	Pure = 2,
+	/** Renderer is for a different mimeType or has a hard dependency which is unsatisfied */
+	Never = 3,
+}
+
 export interface INotebookRendererInfo {
 	id: string;
 	displayName: string;
@@ -121,7 +134,8 @@ export interface INotebookRendererInfo {
 	extensionLocation: URI;
 	extensionId: ExtensionIdentifier;
 
-	matches(mimeType: string): boolean;
+	matchesWithoutKernel(mimeType: string): NotebookRendererMatch;
+	matches(mimeType: string, kernelProvides: ReadonlyArray<string>): NotebookRendererMatch;
 }
 
 export interface INotebookMarkdownRendererInfo {
@@ -165,6 +179,10 @@ export interface ICellOutput {
 	appendData(items: IOutputItemDto[]): void;
 }
 
+export interface CellMetadataChangedEvent {
+	readonly runStateChanged?: boolean;
+}
+
 export interface ICell {
 	readonly uri: URI;
 	handle: number;
@@ -174,7 +192,7 @@ export interface ICell {
 	metadata?: NotebookCellMetadata;
 	onDidChangeOutputs?: Event<NotebookCellOutputsSplice[]>;
 	onDidChangeLanguage: Event<string>;
-	onDidChangeMetadata: Event<void>;
+	onDidChangeMetadata: Event<CellMetadataChangedEvent>;
 }
 
 export interface INotebookTextModel {
@@ -184,7 +202,7 @@ export interface INotebookTextModel {
 	readonly versionId: number;
 
 	readonly cells: readonly ICell[];
-	onWillDispose(listener: () => void): IDisposable;
+	onWillDispose: Event<void>;
 }
 
 export type NotebookCellTextModelSplice<T> = [
@@ -276,12 +294,12 @@ export interface NotebookCellsChangeLanguageEvent {
 export interface NotebookCellsChangeMetadataEvent {
 	readonly kind: NotebookCellsChangeType.ChangeCellMetadata;
 	readonly index: number;
-	readonly metadata: NotebookCellMetadata | undefined;
+	readonly metadata: NotebookCellMetadata;
 }
 
 export interface NotebookDocumentChangeMetadataEvent {
 	readonly kind: NotebookCellsChangeType.ChangeDocumentMetadata;
-	readonly metadata: NotebookDocumentMetadata | undefined;
+	readonly metadata: NotebookDocumentMetadata;
 }
 
 export interface NotebookDocumentUnknownChangeEvent {
@@ -310,10 +328,7 @@ export interface ISelectionHandleState {
 
 export interface ISelectionIndexState {
 	kind: SelectionStateType.Index;
-
-	/**
-	 * [primarySelection, ...secondarySelections]
-	 */
+	focus: ICellRange;
 	selections: ICellRange[];
 }
 
@@ -336,7 +351,8 @@ export const enum CellEditType {
 	Move = 7,
 	Unknown = 8,
 	CellContent = 9,
-	OutputItems = 10
+	OutputItems = 10,
+	PartialMetadata = 11
 }
 
 export interface ICellDto2 {
@@ -361,9 +377,15 @@ export interface ICellOutputEdit {
 	append?: boolean
 }
 
+export interface ICellOutputEditByHandle {
+	editType: CellEditType.Output;
+	handle: number;
+	outputs: IOutputDto[];
+	append?: boolean
+}
+
 export interface ICellOutputItemEdit {
 	editType: CellEditType.OutputItems;
-	index: number;
 	outputId: string;
 	items: IOutputItemDto[];
 	append?: boolean;
@@ -375,6 +397,21 @@ export interface ICellMetadataEdit {
 	metadata: NotebookCellMetadata;
 }
 
+export type NullablePartialNotebookCellMetadata = {
+	[Key in keyof Partial<NotebookCellMetadata>]: NotebookCellMetadata[Key] | null
+};
+
+export interface ICellPartialMetadataEdit {
+	editType: CellEditType.PartialMetadata;
+	index: number;
+	metadata: Partial<NullablePartialNotebookCellMetadata>;
+}
+
+export interface ICellPartialMetadataEditByHandle {
+	editType: CellEditType.PartialMetadata;
+	handle: number;
+	metadata: Partial<NullablePartialNotebookCellMetadata>;
+}
 
 export interface ICellLanguageEdit {
 	editType: CellEditType.CellLanguage;
@@ -394,7 +431,8 @@ export interface ICellMoveEdit {
 	newIdx: number;
 }
 
-export type ICellEditOperation = ICellReplaceEdit | ICellOutputEdit | ICellMetadataEdit | ICellLanguageEdit | IDocumentMetadataEdit | ICellMoveEdit | ICellOutputItemEdit;
+export type IImmediateCellEditOperation = ICellOutputEditByHandle | ICellPartialMetadataEditByHandle | ICellOutputItemEdit;
+export type ICellEditOperation = IImmediateCellEditOperation | ICellReplaceEdit | ICellOutputEdit | ICellMetadataEdit | ICellPartialMetadataEdit | IDocumentMetadataEdit | ICellMoveEdit | ICellOutputItemEdit | ICellLanguageEdit;
 
 export interface NotebookDataDto {
 	readonly cells: ICellDto2[];
@@ -471,6 +509,7 @@ export namespace CellUri {
 type MimeTypeInfo = {
 	alwaysSecure?: boolean;
 	supportedByCore?: boolean;
+	mergeable?: boolean;
 };
 
 const _mimeTypeInfo = new Map<string, MimeTypeInfo>([
@@ -484,6 +523,9 @@ const _mimeTypeInfo = new Map<string, MimeTypeInfo>([
 	['image/jpeg', { supportedByCore: true }],
 	['text/x-javascript', { supportedByCore: true }],
 	['application/x.notebook.error-traceback', { alwaysSecure: true, supportedByCore: true }],
+	['application/x.notebook.stream', { alwaysSecure: true, supportedByCore: true, mergeable: true }],
+	['application/x.notebook.stdout', { alwaysSecure: true, supportedByCore: true, mergeable: true }],
+	['application/x.notebook.stderr', { alwaysSecure: true, supportedByCore: true, mergeable: true }],
 ]);
 
 export function mimeTypeIsAlwaysSecure(mimeType: string): boolean {
@@ -492,6 +534,10 @@ export function mimeTypeIsAlwaysSecure(mimeType: string): boolean {
 
 export function mimeTypeSupportedByCore(mimeType: string) {
 	return _mimeTypeInfo.get(mimeType)?.supportedByCore ?? false;
+}
+
+export function mimeTypeIsMergeable(mimeType: string): boolean {
+	return _mimeTypeInfo.get(mimeType)?.mergeable ?? false;
 }
 
 // if (isWindows) {
@@ -597,14 +643,13 @@ export interface ICellEditorViewState {
 }
 
 export const NOTEBOOK_EDITOR_CURSOR_BOUNDARY = new RawContextKey<'none' | 'top' | 'bottom' | 'both'>('notebookEditorCursorAtBoundary', 'none');
-export const NOTEBOOK_EDITOR_CURSOR_BEGIN_END = new RawContextKey<boolean>('notebookEditorCursorAtEditorBeginEnd', false);
 
 
 export interface INotebookLoadOptions {
 	/**
 	 * Go to disk bypassing any cache of the model if any.
 	 */
-	forceReadFromDisk?: boolean;
+	forceReadFromFile?: boolean;
 }
 
 export interface IResolvedNotebookEditorModel extends INotebookEditorModel {
@@ -613,17 +658,16 @@ export interface IResolvedNotebookEditorModel extends INotebookEditorModel {
 
 export interface INotebookEditorModel extends IEditorModel {
 	readonly onDidChangeDirty: Event<void>;
+	readonly onDidSave: Event<void>;
 	readonly resource: URI;
 	readonly viewType: string;
 	readonly notebook: NotebookTextModel | undefined;
-	readonly lastResolvedFileStat: IFileStatWithMetadata | undefined;
 	isResolved(): this is IResolvedNotebookEditorModel;
 	isDirty(): boolean;
-	isUntitled(): boolean;
 	load(options?: INotebookLoadOptions): Promise<IResolvedNotebookEditorModel>;
-	save(): Promise<boolean>;
-	saveAs(target: URI): Promise<boolean>;
-	revert(options?: IRevertOptions | undefined): Promise<void>;
+	save(options?: ISaveOptions): Promise<boolean>;
+	saveAs(target: URI): Promise<IEditorInput | undefined>;
+	revert(options?: IRevertOptions): Promise<void>;
 }
 
 export interface INotebookDiffEditorModel extends IEditorModel {
@@ -726,17 +770,20 @@ export interface INotebookKernel {
 	friendlyId: string;
 	label: string;
 	extension: ExtensionIdentifier;
-	extensionLocation: URI;
+	localResourceRoot: URI;
 	providerHandle?: number;
 	description?: string;
 	detail?: string;
 	isPreferred?: boolean;
-	preloads?: URI[];
+	preloadUris: URI[];
+	preloadProvides: string[];
 	supportedLanguages?: string[]
+	implementsInterrupt?: boolean;
+	implementsExecutionOrder?: boolean;
 
 	resolve(uri: URI, editorId: string, token: CancellationToken): Promise<void>;
-	executeNotebookCell(uri: URI, handle: number | undefined): Promise<void>;
-	cancelNotebookCell(uri: URI, handle: number | undefined): Promise<void>;
+	executeNotebookCellsRequest(uri: URI, ranges: ICellRange[]): Promise<void>;
+	cancelNotebookCellExecution(uri: URI, ranges: ICellRange[]): Promise<void>;
 }
 
 export interface INotebookKernelProvider {
@@ -745,6 +792,12 @@ export interface INotebookKernelProvider {
 	selector: INotebookDocumentFilter;
 	onDidChangeKernels: Event<URI | undefined>;
 	provideKernels(uri: URI, token: CancellationToken): Promise<INotebookKernel[]>;
+}
+
+export interface INotebookCellStatusBarItemProvider {
+	selector: INotebookDocumentFilter;
+	onDidChangeStatusBarItems?: Event<void>;
+	provideCellStatusBarItems(uri: URI, index: number, token: CancellationToken): Promise<INotebookCellStatusBarItemList>;
 }
 
 export class CellSequence implements ISequence {
@@ -767,26 +820,31 @@ export interface INotebookDiffResult {
 	linesDiff?: { originalCellhandle: number, modifiedCellhandle: number, lineChanges: editorCommon.ILineChange[] }[];
 }
 
-export interface INotebookCellStatusBarEntry {
-	readonly cellResource: URI;
+export interface INotebookCellStatusBarItem {
 	readonly alignment: CellStatusbarAlignment;
 	readonly priority?: number;
 	readonly text: string;
-	readonly tooltip: string | undefined;
-	readonly command: string | Command | undefined;
+	readonly tooltip?: string;
+	readonly command?: string | Command;
 	readonly accessibilityInformation?: IAccessibilityInformation;
-	readonly visible: boolean;
 	readonly opacity?: string;
+	readonly onlyShowWhenActive?: boolean;
+}
+
+export interface INotebookCellStatusBarItemList {
+	items: INotebookCellStatusBarItem[];
+	dispose?(): void;
 }
 
 export const DisplayOrderKey = 'notebook.displayOrder';
 export const CellToolbarLocKey = 'notebook.cellToolbarLocation';
 export const ShowCellStatusBarKey = 'notebook.showCellStatusBar';
 export const NotebookTextDiffEditorPreview = 'notebook.diff.enablePreview';
+export const ExperimentalUseMarkdownRenderer = 'notebook.experimental.useMarkdownRenderer';
 
 export const enum CellStatusbarAlignment {
-	LEFT,
-	RIGHT
+	Left = 1,
+	Right = 2
 }
 
 export interface INotebookDecorationRenderOptions {
@@ -797,6 +855,7 @@ export interface INotebookDecorationRenderOptions {
 
 
 export function cellIndexesToRanges(indexes: number[]) {
+	indexes.sort((a, b) => a - b);
 	const first = indexes.shift();
 
 	if (first === undefined) {
@@ -823,4 +882,37 @@ export function cellRangesToIndexes(ranges: ICellRange[]) {
 	}, [] as number[]);
 
 	return indexes;
+}
+
+/**
+ * todo@rebornix notebookBrowser.reduceCellRanges
+ * @returns
+ */
+export function reduceRanges(ranges: ICellRange[]) {
+	const sorted = ranges.sort((a, b) => a.start - b.start);
+	const first = sorted[0];
+
+	if (!first) {
+		return [];
+	}
+
+	return sorted.reduce((prev: ICellRange[], curr) => {
+		const last = prev[prev.length - 1];
+		if (last.end >= curr.start) {
+			last.end = Math.max(last.end, curr.end);
+		} else {
+			prev.push(curr);
+		}
+		return prev;
+	}, [first] as ICellRange[]);
+}
+
+/**
+ * todo@rebornix test and sort
+ * @param range
+ * @param other
+ * @returns
+ */
+export function cellRangeContains(range: ICellRange, other: ICellRange): boolean {
+	return other.start >= range.start && other.end <= range.end;
 }

@@ -24,6 +24,8 @@ import { IHostService } from 'vs/workbench/services/host/browser/host';
 import { isWeb } from 'vs/base/common/platform';
 import { once } from 'vs/base/common/functional';
 import { truncate } from 'vs/base/common/strings';
+import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
+import { getVirtualWorkspaceLocation } from 'vs/platform/remote/common/remoteHosts';
 
 export class RemoteStatusIndicator extends Disposable implements IWorkbenchContribution {
 
@@ -32,6 +34,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 	private static readonly SHOW_CLOSE_REMOTE_COMMAND_ID = !isWeb; // web does not have a "Close Remote" command
 
 	private static readonly REMOTE_STATUS_LABEL_MAX_LENGTH = 40;
+	private static readonly CODICON_REGEXP = /\$\((.*?)\)/g;
 
 	private remoteStatusEntry: IStatusbarEntryAccessor | undefined;
 
@@ -53,7 +56,8 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 		@IExtensionService private readonly extensionService: IExtensionService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@IRemoteAuthorityResolverService private readonly remoteAuthorityResolverService: IRemoteAuthorityResolverService,
-		@IHostService private readonly hostService: IHostService
+		@IHostService private readonly hostService: IHostService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService
 	) {
 		super();
 
@@ -98,7 +102,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 						f1: true
 					});
 				}
-				run = () => that.remoteAuthority && that.hostService.openWindow({ forceReuseWindow: true });
+				run = () => that.remoteAuthority && that.hostService.openWindow({ forceReuseWindow: true, remoteAuthority: null });
 			});
 
 			MenuRegistry.appendMenuItem(MenuId.MenubarFileMenu, {
@@ -146,6 +150,8 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 					}
 				}));
 			}
+		} else {
+			this._register(this.workspaceContextService.onDidChangeWorkbenchState(() => this.updateRemoteStatusIndicator()));
 		}
 	}
 
@@ -196,14 +202,15 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 
 	private updateRemoteStatusIndicator(): void {
 
-		// Remote indicator: show if provided via options
+		// Remote Indicator: show if provided via options
 		const remoteIndicator = this.environmentService.options?.windowIndicator;
 		if (remoteIndicator) {
 			this.renderRemoteStatusIndicator(truncate(remoteIndicator.label, RemoteStatusIndicator.REMOTE_STATUS_LABEL_MAX_LENGTH), remoteIndicator.tooltip, remoteIndicator.command);
+			return;
 		}
 
 		// Remote Authority: show connection state
-		else if (this.remoteAuthority) {
+		if (this.remoteAuthority) {
 			const hostLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, this.remoteAuthority) || this.remoteAuthority;
 			switch (this.connectionState) {
 				case 'initializing':
@@ -218,18 +225,34 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 				default:
 					this.renderRemoteStatusIndicator(`$(remote) ${truncate(hostLabel, RemoteStatusIndicator.REMOTE_STATUS_LABEL_MAX_LENGTH)}`, nls.localize('host.tooltip', "Editing on {0}", hostLabel));
 			}
+			return;
 		}
 
-		// Remote Extensions Installed: offer the indicator to show actions
-		else if (this.remoteMenu.getActions().length > 0) {
+		// Workspace with label: indicate editing source
+		const workspaceLabel = this.getWorkspaceLabel();
+		if (workspaceLabel) {
+			this.renderRemoteStatusIndicator(`$(remote) ${truncate(workspaceLabel, RemoteStatusIndicator.REMOTE_STATUS_LABEL_MAX_LENGTH)}`, nls.localize('workspace.tooltip', "Editing on {0}", workspaceLabel));
+			return;
+		}
+
+		// Remote actions: offer menu
+		if (this.remoteMenu.getActions().length > 0) {
 			this.renderRemoteStatusIndicator(`$(remote)`, nls.localize('noHost.tooltip', "Open a Remote Window"));
+			return;
 		}
 
 		// No Remote Extensions: hide status indicator
-		else {
-			dispose(this.remoteStatusEntry);
-			this.remoteStatusEntry = undefined;
+		dispose(this.remoteStatusEntry);
+		this.remoteStatusEntry = undefined;
+	}
+
+	private getWorkspaceLabel() {
+		const workspace = this.workspaceContextService.getWorkspace();
+		const workspaceLocation = getVirtualWorkspaceLocation(workspace);
+		if (workspaceLocation) {
+			return this.labelService.getHostLabel(workspaceLocation.scheme, workspaceLocation.authority);
 		}
+		return undefined;
 	}
 
 	private renderRemoteStatusIndicator(text: string, tooltip?: string, command?: string, showProgress?: boolean): void {
@@ -238,10 +261,11 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 			command = RemoteStatusIndicator.REMOTE_ACTIONS_COMMAND_ID;
 		}
 
+		const ariaLabel = text.replace(RemoteStatusIndicator.CODICON_REGEXP, (_match, codiconName) => codiconName);
 		const properties: IStatusbarEntry = {
 			backgroundColor: themeColorFromId(STATUS_BAR_HOST_NAME_BACKGROUND),
 			color: themeColorFromId(STATUS_BAR_HOST_NAME_FOREGROUND),
-			ariaLabel: name,
+			ariaLabel,
 			text,
 			showProgress,
 			tooltip,
@@ -256,23 +280,32 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 	}
 
 	private showRemoteMenu(menu: IMenu) {
+		const getCategoryLabel = (action: MenuItemAction) => {
+			if (action.item.category) {
+				return typeof action.item.category === 'string' ? action.item.category : action.item.category.value;
+			}
+			return undefined;
+		};
+
 		const computeItems = () => {
 			const actions = menu.getActions();
-			const items: (IQuickPickItem
-				| IQuickPickSeparator)[] = [];
-			for (let actionGroup of actions) {
-				if (items.length) {
-					items.push({ type: 'separator' });
-				}
+			const items: (IQuickPickItem | IQuickPickSeparator)[] = [];
 
+			let lastCategoryName: string | undefined = undefined;
+
+			for (let actionGroup of actions) {
+				let hasGroupCategory = false;
 				for (let action of actionGroup[1]) {
 					if (action instanceof MenuItemAction) {
-						let label = typeof action.item.title === 'string' ? action.item.title : action.item.title.value;
-						if (action.item.category) {
-							const category = typeof action.item.category === 'string' ? action.item.category : action.item.category.value;
-							label = nls.localize('cat.title', "{0}: {1}", category, label);
+						if (!hasGroupCategory) {
+							const category = getCategoryLabel(action);
+							if (category !== lastCategoryName) {
+								items.push({ type: 'separator', label: category });
+								lastCategoryName = category;
+							}
+							hasGroupCategory = true;
 						}
-
+						let label = typeof action.item.title === 'string' ? action.item.title : action.item.title.value;
 						items.push({
 							type: 'item',
 							id: action.item.id,
@@ -298,6 +331,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 
 		const quickPick = this.quickInputService.createQuickPick();
 		quickPick.items = computeItems();
+		quickPick.sortByLabel = false;
 		quickPick.canSelectMany = false;
 		once(quickPick.onDidAccept)((_ => {
 			const selectedItems = quickPick.selectedItems;

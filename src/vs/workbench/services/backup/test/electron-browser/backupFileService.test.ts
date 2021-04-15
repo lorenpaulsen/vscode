@@ -19,7 +19,7 @@ import { Schemas } from 'vs/base/common/network';
 import { FileService } from 'vs/platform/files/common/fileService';
 import { NullLogService } from 'vs/platform/log/common/log';
 import { DiskFileSystemProvider } from 'vs/platform/files/node/diskFileSystemProvider';
-import { NativeWorkbenchEnvironmentService } from 'vs/workbench/services/environment/electron-browser/environmentService';
+import { NativeWorkbenchEnvironmentService } from 'vs/workbench/services/environment/electron-sandbox/environmentService';
 import { snapshotToString } from 'vs/workbench/services/textfile/common/textfiles';
 import { IFileService } from 'vs/platform/files/common/files';
 import { NativeBackupFileService } from 'vs/workbench/services/backup/electron-sandbox/backupFileService';
@@ -41,7 +41,7 @@ class TestWorkbenchEnvironmentService extends NativeWorkbenchEnvironmentService 
 
 export class NodeTestBackupFileService extends NativeBackupFileService {
 
-	readonly fileService: IFileService;
+	override readonly fileService: IFileService;
 
 	private backupResourceJoiners: Function[];
 	private discardBackupJoiners: Function[];
@@ -73,7 +73,7 @@ export class NodeTestBackupFileService extends NativeBackupFileService {
 		return new Promise(resolve => this.backupResourceJoiners.push(resolve));
 	}
 
-	async backup(resource: URI, content?: ITextSnapshot, versionId?: number, meta?: any, token?: CancellationToken): Promise<void> {
+	async override backup(resource: URI, content?: ITextSnapshot, versionId?: number, meta?: any, token?: CancellationToken): Promise<void> {
 		const p = super.backup(resource, content, versionId, meta, token);
 		const removeFromPendingBackups = insert(this.pendingBackupsArr, p.then(undefined, undefined));
 
@@ -92,7 +92,7 @@ export class NodeTestBackupFileService extends NativeBackupFileService {
 		return new Promise(resolve => this.discardBackupJoiners.push(resolve));
 	}
 
-	async discardBackup(resource: URI): Promise<void> {
+	async override discardBackup(resource: URI): Promise<void> {
 		await super.discardBackup(resource);
 		this.discardedBackups.push(resource);
 

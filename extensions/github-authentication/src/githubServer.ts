@@ -45,7 +45,7 @@ export class GitHubServer {
 	constructor(private readonly telemetryReporter: TelemetryReporter) { }
 
 	private isTestEnvironment(url: vscode.Uri): boolean {
-		return url.authority === 'vscode-web-test-playground.azurewebsites.net' || url.authority.startsWith('localhost:');
+		return /\.azurewebsites\.net$/.test(url.authority) || url.authority.startsWith('localhost:');
 	}
 
 	public async login(scopes: string): Promise<string> {
@@ -94,9 +94,12 @@ export class GitHubServer {
 
 		return Promise.race([
 			codeExchangePromise.promise,
-			promiseFromEvent<string | undefined, string>(onDidManuallyProvideToken.event, (token: string | undefined): string => {
-				if (!token) { throw new Error('Cancelled'); }
-				return token;
+			promiseFromEvent<string | undefined, string>(onDidManuallyProvideToken.event, (token: string | undefined, resolve, reject): void => {
+				if (!token) {
+					reject('Cancelled');
+				} else {
+					resolve(token);
+				}
 			}).promise
 		]).finally(() => {
 			this._pendingStates.delete(scopes);

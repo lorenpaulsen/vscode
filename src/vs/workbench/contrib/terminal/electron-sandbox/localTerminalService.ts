@@ -7,7 +7,6 @@ import { Emitter } from 'vs/base/common/event';
 import { Disposable } from 'vs/base/common/lifecycle';
 import { IProcessEnvironment } from 'vs/base/common/platform';
 import { localize } from 'vs/nls';
-import { env as processEnv } from 'vs/base/common/process';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { ILabelService } from 'vs/platform/label/common/label';
 import { ILogService } from 'vs/platform/log/common/log';
@@ -17,6 +16,7 @@ import { IGetTerminalLayoutInfoArgs, IProcessDetails, ISetTerminalLayoutInfoArgs
 import { ILocalPtyService } from 'vs/platform/terminal/electron-sandbox/terminal';
 import { IWorkspaceContextService } from 'vs/platform/workspace/common/workspace';
 import { LocalPty } from 'vs/workbench/contrib/terminal/electron-sandbox/localPty';
+import { IShellEnvironmentService } from 'vs/workbench/services/environment/electron-sandbox/shellEnvironmentService';
 
 export class LocalTerminalService extends Disposable implements ILocalTerminalService {
 	public _serviceBrand: undefined;
@@ -37,7 +37,8 @@ export class LocalTerminalService extends Disposable implements ILocalTerminalSe
 		@ILogService private readonly _logService: ILogService,
 		@ILocalPtyService private readonly _localPtyService: ILocalPtyService,
 		@ILabelService private readonly _labelService: ILabelService,
-		@INotificationService notificationService: INotificationService
+		@INotificationService notificationService: INotificationService,
+		@IShellEnvironmentService private readonly _shellEnvironmentService: IShellEnvironmentService
 	) {
 		super();
 
@@ -59,7 +60,7 @@ export class LocalTerminalService extends Disposable implements ILocalTerminalSe
 		// Attach pty host listeners
 		if (this._localPtyService.onPtyHostExit) {
 			this._register(this._localPtyService.onPtyHostExit(() => {
-				notificationService.error(`The terminal's pty host process exited, the connection to all terminal processes was lost`);
+				this._logService.error(`The terminal's pty host process exited, the connection to all terminal processes was lost`);
 			}));
 		}
 		let unresponsiveNotification: INotificationHandle | undefined;
@@ -98,7 +99,8 @@ export class LocalTerminalService extends Disposable implements ILocalTerminalSe
 	}
 
 	public async createProcess(shellLaunchConfig: IShellLaunchConfig, cwd: string, cols: number, rows: number, env: IProcessEnvironment, windowsEnableConpty: boolean, shouldPersist: boolean): Promise<ITerminalChildProcess> {
-		const id = await this._localPtyService.createProcess(shellLaunchConfig, cwd, cols, rows, env, processEnv as IProcessEnvironment, windowsEnableConpty, shouldPersist, this._getWorkspaceId(), this._getWorkspaceName());
+		const executableEnv = await this._shellEnvironmentService.getShellEnv();
+		const id = await this._localPtyService.createProcess(shellLaunchConfig, cwd, cols, rows, env, executableEnv, windowsEnableConpty, shouldPersist, this._getWorkspaceId(), this._getWorkspaceName());
 		const pty = this._instantiationService.createInstance(LocalPty, id, shouldPersist);
 		this._ptys.set(id, pty);
 		return pty;
@@ -116,8 +118,12 @@ export class LocalTerminalService extends Disposable implements ILocalTerminalSe
 		return undefined;
 	}
 
-	public async listProcesses(reduceGraceTime: boolean): Promise<IProcessDetails[]> {
-		return this._localPtyService.listProcesses(reduceGraceTime);
+	public async listProcesses(): Promise<IProcessDetails[]> {
+		return this._localPtyService.listProcesses();
+	}
+
+	public async reduceConnectionGraceTime(): Promise<void> {
+		this._localPtyService.reduceConnectionGraceTime();
 	}
 
 	public async setTerminalLayoutInfo(layoutInfo?: ITerminalsLayoutInfoById): Promise<void> {

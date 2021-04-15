@@ -8,13 +8,11 @@ import { Event, Emitter } from 'vs/base/common/event';
 import * as objects from 'vs/base/common/objects';
 import { Action } from 'vs/base/common/actions';
 import * as errors from 'vs/base/common/errors';
-import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
+import { ICustomEndpointTelemetryService, ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { formatPII, isUri } from 'vs/workbench/contrib/debug/common/debugUtils';
 import { IDebugAdapter, IConfig, AdapterEndEvent, IDebugger } from 'vs/workbench/contrib/debug/common/debug';
 import { IExtensionHostDebugService, IOpenExtensionWindowResult } from 'vs/platform/debug/common/extensionHostDebug';
 import { URI } from 'vs/base/common/uri';
-import { IProcessEnvironment } from 'vs/base/common/platform';
-import { env as processEnv } from 'vs/base/common/process';
 import { IOpenerService } from 'vs/platform/opener/common/opener';
 import { IDisposable, dispose } from 'vs/base/common/lifecycle';
 import { CancellationToken } from 'vs/base/common/cancellation';
@@ -80,10 +78,10 @@ export class RawDebugSession implements IDisposable {
 
 	constructor(
 		debugAdapter: IDebugAdapter,
-		dbgr: IDebugger,
+		public readonly dbgr: IDebugger,
 		private readonly sessionId: string,
 		private readonly telemetryService: ITelemetryService,
-		public readonly customTelemetryService: ITelemetryService | undefined,
+		private readonly customTelemetryService: ICustomEndpointTelemetryService,
 		private readonly extensionHostDebugService: IExtensionHostDebugService,
 		private readonly openerService: IOpenerService,
 		private readonly notificationService: INotificationService
@@ -275,8 +273,9 @@ export class RawDebugSession implements IDisposable {
 	/**
 	 * Terminate the debuggee and shutdown the adapter
 	 */
-	disconnect(restart = false): Promise<any> {
-		return this.shutdown(undefined, restart);
+	disconnect(args: DebugProtocol.DisconnectArguments): Promise<any> {
+		const terminateDebuggee = this.capabilities.supportTerminateDebuggee ? args.terminateDebuggee : undefined;
+		return this.shutdown(undefined, args.restart, terminateDebuggee);
 	}
 
 	//---- DAP requests
@@ -299,7 +298,7 @@ export class RawDebugSession implements IDisposable {
 				this.terminated = true;
 				return this.send('terminate', { restart }, undefined, 2000);
 			}
-			return this.disconnect(restart);
+			return this.disconnect({ terminateDebuggee: true, restart });
 		}
 		return Promise.reject(new Error('terminated not supported'));
 	}
@@ -506,12 +505,13 @@ export class RawDebugSession implements IDisposable {
 
 	//---- private
 
-	private async shutdown(error?: Error, restart = false): Promise<any> {
+	private async shutdown(error?: Error, restart = false, terminateDebuggee: boolean | undefined = undefined): Promise<any> {
 		if (!this.inShutdown) {
 			this.inShutdown = true;
 			if (this.debugAdapter) {
 				try {
-					await this.send('disconnect', { restart }, undefined, 2000);
+					const args = typeof terminateDebuggee === 'boolean' ? { restart, terminateDebuggee } : { restart };
+					this.send('disconnect', args, undefined, 2000);
 				} catch (e) {
 					// Catch the potential 'disconnect' error - no need to show it to the user since the adapter is shutting down
 				} finally {
@@ -620,15 +620,7 @@ export class RawDebugSession implements IDisposable {
 			}
 		}
 
-		let env: IProcessEnvironment = processEnv;
-		if (vscodeArgs.env && Object.keys(vscodeArgs.env).length > 0) {
-			// merge environment variables into a copy of the process.env
-			env = objects.mixin(objects.deepClone(processEnv), vscodeArgs.env);
-			// and delete some if necessary
-			Object.keys(env).filter(k => env[k] === null).forEach(key => delete env[key]);
-		}
-
-		return this.extensionHostDebugService.openExtensionDevelopmentHostWindow(args, env, !!vscodeArgs.debugRenderer);
+		return this.extensionHostDebugService.openExtensionDevelopmentHostWindow(args, vscodeArgs.env, !!vscodeArgs.debugRenderer);
 	}
 
 	private send<R extends DebugProtocol.Response>(command: string, args: any, token?: CancellationToken, timeout?: number): Promise<R | undefined> {
@@ -686,9 +678,8 @@ export class RawDebugSession implements IDisposable {
 		if (error && url) {
 			const label = error.urlLabel ? error.urlLabel : nls.localize('moreInfo', "More Info");
 			return errors.createErrorWithActions(userMessage, {
-				actions: [new Action('debug.moreInfo', label, undefined, true, () => {
+				actions: [new Action('debug.moreInfo', label, undefined, true, async () => {
 					this.openerService.open(URI.parse(url));
-					return Promise.resolve(null);
 				})]
 			});
 		}
@@ -724,12 +715,13 @@ export class RawDebugSession implements IDisposable {
 			}
 		*/
 		this.telemetryService.publicLogError('debugProtocolErrorResponse', { error: telemetryMessage });
-		if (this.customTelemetryService) {
+		const telemetryEndpoint = this.dbgr.getCustomTelemetryEndpoint();
+		if (telemetryEndpoint) {
 			/* __GDPR__TODO__
 				The message is sent in the name of the adapter but the adapter doesn't know about it.
 				However, since adapters are an open-ended set, we can not declared the events statically either.
 			*/
-			this.customTelemetryService.publicLogError('debugProtocolErrorResponse', { error: telemetryMessage });
+			this.customTelemetryService.publicLogError(telemetryEndpoint, 'debugProtocolErrorResponse', { error: telemetryMessage });
 		}
 	}
 

@@ -72,6 +72,14 @@ export abstract class DiffElementViewModelBase extends Disposable {
 		throw new Error('Use Cell.layoutInfo.editorMargin');
 	}
 
+	set metadataStatusHeight(height: number) {
+		this._layout({ metadataStatusHeight: height });
+	}
+
+	get metadataStatusHeight() {
+		throw new Error('Use Cell.layoutInfo.outputStatusHeight');
+	}
+
 	set metadataHeight(height: number) {
 		this._layout({ metadataHeight: height });
 	}
@@ -280,13 +288,17 @@ export class SideBySideDiffElementViewModel extends DiffElementViewModelBase {
 		return this.mainDocumentTextModel;
 	}
 
+	override readonly original: DiffNestedCellViewModel;
+	override readonly modified: DiffNestedCellViewModel;
+	override readonly type: 'unchanged' | 'modified';
+
 	constructor(
-		readonly mainDocumentTextModel: NotebookTextModel,
+		mainDocumentTextModel: NotebookTextModel,
 		readonly otherDocumentTextModel: NotebookTextModel,
-		readonly original: DiffNestedCellViewModel,
-		readonly modified: DiffNestedCellViewModel,
-		readonly type: 'unchanged' | 'modified',
-		readonly editorEventDispatcher: NotebookDiffEditorEventDispatcher
+		original: DiffNestedCellViewModel,
+		modified: DiffNestedCellViewModel,
+		type: 'unchanged' | 'modified',
+		editorEventDispatcher: NotebookDiffEditorEventDispatcher
 	) {
 		super(
 			mainDocumentTextModel,
@@ -294,6 +306,10 @@ export class SideBySideDiffElementViewModel extends DiffElementViewModelBase {
 			modified,
 			type,
 			editorEventDispatcher);
+
+		this.original = original;
+		this.modified = modified;
+		this.type = type;
 
 		this.metadataFoldingState = PropertyFoldingState.Collapsed;
 		this.outputFoldingState = PropertyFoldingState.Collapsed;
@@ -403,15 +419,19 @@ export class SingleSideDiffElementViewModel extends DiffElementViewModelBase {
 		}
 	}
 
+	override readonly type: 'insert' | 'delete';
+
 	constructor(
-		readonly mainDocumentTextModel: NotebookTextModel,
+		mainDocumentTextModel: NotebookTextModel,
 		readonly otherDocumentTextModel: NotebookTextModel,
-		readonly original: DiffNestedCellViewModel | undefined,
-		readonly modified: DiffNestedCellViewModel | undefined,
-		readonly type: 'insert' | 'delete',
-		readonly editorEventDispatcher: NotebookDiffEditorEventDispatcher
+		original: DiffNestedCellViewModel | undefined,
+		modified: DiffNestedCellViewModel | undefined,
+		type: 'insert' | 'delete',
+		editorEventDispatcher: NotebookDiffEditorEventDispatcher
 	) {
 		super(mainDocumentTextModel, original, modified, type, editorEventDispatcher);
+		this.type = type;
+
 		this._register(this.cellViewModel!.onDidChangeOutputLayout(() => {
 			this._layout({ recomputeOutput: true });
 		}));

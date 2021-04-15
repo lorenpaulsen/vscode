@@ -3,11 +3,10 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter, Event } from 'vs/base/common/event';
-import { MainThreadNotebookShape } from 'vs/workbench/api/common/extHost.protocol';
+import { MainThreadNotebookEditorsShape } from 'vs/workbench/api/common/extHost.protocol';
 import * as extHostTypes from 'vs/workbench/api/common/extHostTypes';
 import * as extHostConverter from 'vs/workbench/api/common/extHostTypeConverters';
-import { CellEditType, ICellEditOperation, ICellReplaceEdit, notebookDocumentMetadataDefaults } from 'vs/workbench/contrib/notebook/common/notebookCommon';
+import { CellEditType, ICellEditOperation, ICellReplaceEdit } from 'vs/workbench/contrib/notebook/common/notebookCommon';
 import * as vscode from 'vscode';
 import { ExtHostNotebookDocument } from './extHostNotebookDocument';
 
@@ -45,7 +44,7 @@ class NotebookEditorCellEditBuilder implements vscode.NotebookEditorEdit {
 		this._throwIfFinalized();
 		this._collectedEdits.push({
 			editType: CellEditType.DocumentMetadata,
-			metadata: { ...notebookDocumentMetadataDefaults, ...value }
+			metadata: value
 		});
 	}
 
@@ -93,16 +92,12 @@ export class ExtHostNotebookEditor {
 	private _kernel?: vscode.NotebookKernel;
 
 	private readonly _hasDecorationsForKey = new Set<string>();
-	private readonly _onDidDispose = new Emitter<void>();
-	readonly onDidDispose: Event<void> = this._onDidDispose.event;
-
 
 	private _editor?: vscode.NotebookEditor;
 
 	constructor(
 		readonly id: string,
-		private readonly _viewType: string,
-		private readonly _proxy: MainThreadNotebookShape,
+		private readonly _proxy: MainThreadNotebookEditorsShape,
 		readonly notebookData: ExtHostNotebookDocument,
 		visibleRanges: vscode.NotebookCellRange[],
 		selections: vscode.NotebookCellRange[],
@@ -113,21 +108,12 @@ export class ExtHostNotebookEditor {
 		this._viewColumn = viewColumn;
 	}
 
-	dispose() {
-		this._onDidDispose.fire();
-		this._onDidDispose.dispose();
-	}
-
-	get editor(): vscode.NotebookEditor {
+	get apiEditor(): vscode.NotebookEditor {
 		if (!this._editor) {
 			const that = this;
 			this._editor = {
 				get document() {
 					return that.notebookData.notebookDocument;
-				},
-				get selection() {
-					const primarySelection = that._selections[0];
-					return primarySelection && that.notebookData.getCellFromIndex(primarySelection.start)?.cell;
 				},
 				get selections() {
 					return that._selections;
@@ -144,9 +130,6 @@ export class ExtHostNotebookEditor {
 				},
 				get viewColumn() {
 					return that._viewColumn;
-				},
-				get onDidDispose() {
-					return that.onDidDispose;
 				},
 				edit(callback) {
 					const edit = new NotebookEditorCellEditBuilder(this.document.version);
@@ -184,6 +167,10 @@ export class ExtHostNotebookEditor {
 		this._selections = selections;
 	}
 
+	_acceptViewColumn(value: vscode.ViewColumn | undefined) {
+		this._viewColumn = value;
+	}
+
 	private _applyEdit(editData: INotebookEditData): Promise<boolean> {
 
 		// return when there is nothing to do
@@ -204,9 +191,9 @@ export class ExtHostNotebookEditor {
 			const prevIndex = compressedEditsIndex;
 			const prev = compressedEdits[prevIndex];
 
-			if (prev.editType === CellEditType.Replace && editData.cellEdits[i].editType === CellEditType.Replace) {
-				const edit = editData.cellEdits[i];
-				if ((edit.editType !== CellEditType.DocumentMetadata) && prev.index === edit.index) {
+			const edit = editData.cellEdits[i];
+			if (prev.editType === CellEditType.Replace && edit.editType === CellEditType.Replace) {
+				if (prev.index === edit.index) {
 					prev.cells.push(...(editData.cellEdits[i] as ICellReplaceEdit).cells);
 					prev.count += (editData.cellEdits[i] as ICellReplaceEdit).count;
 					continue;
@@ -217,7 +204,7 @@ export class ExtHostNotebookEditor {
 			compressedEditsIndex++;
 		}
 
-		return this._proxy.$tryApplyEdits(this._viewType, this.notebookData.uri, editData.documentVersionId, compressedEdits);
+		return this._proxy.$tryApplyEdits(this.id, editData.documentVersionId, compressedEdits);
 	}
 
 	setDecorations(decorationType: vscode.NotebookEditorDecorationType, range: vscode.NotebookCellRange): void {
