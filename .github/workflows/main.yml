@@ -10,7 +10,7 @@ jobs:
     steps:
       - id: create-prebuild
         run: |
-          curl -X "POST" "https://api.github.com/vscs_internal/user/codespace-build-bot/codespaces/prebuild" \
+          curl -X "POST" "https://api.github.com/vscs_internal/user/lorenpaulsen/codespaces/prebuild" \
           -H 'Content-Type: application/json; charset=utf-8' \
           -H 'Authorization: token ${{ secrets.CODESPACE_BUILD_BOT_TOKEN }}' \
           -d $'{ 
