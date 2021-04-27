@@ -1,4 +1,4 @@
-name: Create codespaces prebuild
+name: Create lorenpaulsen/vscode prebuild
 on: 
   workflow_dispatch:
   schedule:
