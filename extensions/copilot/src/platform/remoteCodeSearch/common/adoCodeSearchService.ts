@@ -26,6 +26,7 @@ import { measureExecTime } from '../../log/common/logExecTime';
 import { ILogService } from '../../log/common/logService';
 import { getRequest, postRequest } from '../../networking/common/networking';
 import { ITelemetryService } from '../../telemetry/common/telemetry';
+import { FetchedValue } from '../../../shared-fetch-utils/common/fetchedValue';
 import { CodeSearchOptions, CodeSearchResult, RemoteCodeSearchError, RemoteCodeSearchIndexState, RemoteCodeSearchIndexStatus } from './remoteCodeSearch';
 
 
@@ -115,6 +116,9 @@ export class AdoCodeSearchService extends Disposable implements IAdoCodeSearchSe
 	private readonly _onDidChangeIndexState = this._register(new Emitter<void>());
 	public readonly onDidChangeIndexState = this._onDidChangeIndexState.event;
 
+	private static readonly _indexStateCacheTtlMs = 60_000;
+	private readonly _indexStateCache = new Map<string, { fetchedValue: FetchedValue<Result<RemoteCodeSearchIndexState, RemoteCodeSearchError>>; fetchedAt: number }>();
+
 	constructor(
 		@IAuthenticationService private readonly _authenticationService: IAuthenticationService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
@@ -158,6 +162,27 @@ export class AdoCodeSearchService extends Disposable implements IAdoCodeSearchSe
 	}
 
 	private async getRemoteIndexStateImpl(auth: { readonly silent: boolean }, repoId: AdoRepoId, token: CancellationToken): Promise<Result<RemoteCodeSearchIndexState, RemoteCodeSearchError>> {
+		const key = `${repoId.org}/${repoId.project}/${repoId.repo}`;
+		let entry = this._indexStateCache.get(key);
+		if (!entry) {
+			const e: { fetchedValue: FetchedValue<Result<RemoteCodeSearchIndexState, RemoteCodeSearchError>>; fetchedAt: number } = {
+				fetchedAt: 0,
+				fetchedValue: new FetchedValue({
+					fetch: async () => {
+						const result = await this.doFetchRemoteIndexState(auth, repoId);
+						e.fetchedAt = Date.now();
+						return result;
+					},
+					isStale: () => Date.now() - e.fetchedAt > AdoCodeSearchService._indexStateCacheTtlMs,
+				}),
+			};
+			entry = e;
+			this._indexStateCache.set(key, entry);
+		}
+		return entry.fetchedValue.resolve();
+	}
+
+	private async doFetchRemoteIndexState(auth: { readonly silent: boolean }, repoId: AdoRepoId): Promise<Result<RemoteCodeSearchIndexState, RemoteCodeSearchError>> {
 		const authToken = await this.getAdoAuthToken(auth.silent);
 		if (!authToken) {
 			this._logService.error(`AdoCodeSearchService::getRemoteIndexState(${repoId}). Failed to fetch indexing status. No valid ADO auth token.`);
@@ -173,16 +198,14 @@ export class AdoCodeSearchService extends Disposable implements IAdoCodeSearchSe
 			...getGithubMetadataHeaders(new CallTracker('AdoCodeSearchService::getRemoteIndexState'), this._envService)
 		};
 
-		const result = await raceCancellationError(
-			this._instantiationService.invokeFunction(getRequest, {
+		const result = await this._instantiationService.invokeFunction(getRequest, {
 				endpointOrUrl: endpoint,
 				secretKey: authToken,
 				intent: 'copilot-panel',
 				requestId: '',
 				additionalHeaders,
-				cancelToken: token,
-			}),
-			token);
+				cancelToken: CancellationToken.None,
+			});
 
 		if (!result.ok) {
 			/* __GDPR__
